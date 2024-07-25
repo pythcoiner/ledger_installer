@@ -2,7 +2,7 @@ use crate::listener;
 use crate::{gui::Message, gui::Message::LedgerServiceMsg, service::ServiceFn};
 
 use ledger_manager::utils::{
-    check_latest_apps, get_version_info, install_app, ledger_api, Version,
+    check_latest_apps, get_version_info, install_app, ledger_api, Step, Version,
 };
 use ledger_manager::{genuine_check, ledger_transport_hidapi::TransportNativeHID};
 use std::time::Duration;
@@ -193,7 +193,12 @@ impl LedgerService {
         if let Some(transport) = self.connect() {
             install_app(
                 &transport,
-                |msg, alarm| Self::display_message(&sender, msg, alarm),
+                |msg| {
+                    if msg.is_message() {
+                        let alarm = msg.is_error();
+                        Self::display_message(&sender, &msg.message(), alarm)
+                    }
+                },
                 testnet,
             )
         }

@@ -78,32 +78,68 @@ where
     Ok((bitcoin, test))
 }
 
+pub trait Step {
+    fn is_error(&self) -> bool;
+    fn is_message(&self) -> bool;
+    fn message(self) -> String;
+}
+
+#[derive(Debug, Clone)]
+pub enum InstallStep {
+    Started,
+    Info(String),
+    AllowInstall,
+    Chunk,
+    Completed,
+    Error(String),
+}
+
+impl Step for InstallStep {
+    fn is_error(&self) -> bool {
+        matches!(self, Self::Error(_))
+    }
+
+    fn is_message(&self) -> bool {
+        !matches!(self, Self::Chunk)
+    }
+
+    fn message(self) -> String {
+        match self {
+            InstallStep::Started => "Get device info from API...".into(),
+            InstallStep::Info(msg) => msg,
+            InstallStep::AllowInstall => {
+                "Installing, please allow ledger manager on device...".into()
+            }
+            InstallStep::Chunk => "".into(),
+            InstallStep::Completed => "Successfully installed the app.".into(),
+            InstallStep::Error(msg) => msg,
+        }
+    }
+}
+
 pub fn install_app<M>(transport: &TransportNativeHID, msg_callback: M, testnet: bool)
 where
-    M: Fn(&str, bool),
+    M: Fn(InstallStep),
 {
-    log::debug!("ledger::install_app(testnet={})", testnet);
-
-    msg_callback("Get device info from API...", false);
+    msg_callback(InstallStep::Started);
     if let Ok(device_info) = device_info(transport) {
         let bitcoin_app = match bitcoin_latest_app(&device_info, testnet) {
             Ok(Some(a)) => a,
             Ok(None) => {
-                msg_callback("Could not get info about Bitcoin app.", true);
+                msg_callback(InstallStep::Error(
+                    "Could not get info about Bitcoin app.".into(),
+                ));
                 return;
             }
             Err(e) => {
-                msg_callback(
-                    &format!("Error querying info about Bitcoin app: {}.", e),
-                    true,
-                );
+                msg_callback(InstallStep::Error(format!(
+                    "Error querying info about Bitcoin app: {}.",
+                    e
+                )));
                 return;
             }
         };
-        msg_callback(
-            "Installing, please allow Ledger manager on device...",
-            false,
-        );
+        msg_callback(InstallStep::AllowInstall);
         // Now install the app by connecting through their websocket thing to their HSM. Make sure to
         // properly escape the parameters in the request's parameter.
         let install_ws_url =
@@ -115,20 +151,16 @@ where
                 .append_pair("firmwareKey", &bitcoin_app.firmware_key)
                 .append_pair("hash", &bitcoin_app.hash)
                 .finish();
-        msg_callback("Install app...", false);
-        if let Err(e) = query_via_websocket(transport, &install_ws_url) {
-            msg_callback(
-                &format!(
-                    "Got an error when installing Bitcoin app from Ledger's remote HSM: {}.",
-                    e
-                ),
-                false,
-            );
+        if let Err(e) = query_via_websocket(transport, &install_ws_url, &msg_callback) {
+            msg_callback(InstallStep::Error(format!(
+                "Got an error when installing Bitcoin app from Ledger's remote HSM: {}.",
+                e
+            )));
             return;
         }
-        msg_callback("Successfully installed the app.", false);
+        msg_callback(InstallStep::Completed);
     } else {
-        msg_callback("Fail to fetch device info!", true);
+        msg_callback(InstallStep::Error("Fail to fetch device info!".into()));
     }
 }
 

@@ -11,6 +11,7 @@ use form_urlencoded::Serializer as UrlSerializer;
 use ledger_apdu::APDUCommand;
 use ledger_transport_hidapi::TransportNativeHID;
 use serde_derive::Deserialize;
+use utils::InstallStep;
 
 use std::{error, str};
 
@@ -297,10 +298,14 @@ fn deser_apdu_command(hex_str: &str) -> Result<APDUCommand<Vec<u8>>, Box<dyn err
 /// opening a socket so a remote server communicates directly with the Ledger. It appears to be
 /// talking to an HSM up there which would manage sensitive actions.
 /// Parameters are passed directly in the url. Don't forget to escape the necessary characters!
-pub fn query_via_websocket(
+pub fn query_via_websocket<M>(
     ledger_api: &TransportNativeHID,
     url: &str,
-) -> Result<(), Box<dyn error::Error>> {
+    msg_callback: M,
+) -> Result<(), Box<dyn error::Error>>
+where
+    M: Fn(InstallStep),
+{
     let (mut socket, _) = tungstenite::connect(url)?;
 
     // https://github.com/LedgerHQ/ledger-live/blob/99879eb5bada1ecaea7a02d8886e16b44657af6d/libs/ledger-live-common/src/socket/index.ts#L95
@@ -309,6 +314,7 @@ pub fn query_via_websocket(
         match msg {
             // It appears they only exchange JSON text messages.
             tungstenite::Message::Text(text) => {
+                msg_callback(InstallStep::Chunk);
                 let msg: HsmMessage = serde_json::from_str(&text)?;
 
                 // The dance is usually:
@@ -645,7 +651,7 @@ pub fn genuine_check(ledger_api: &TransportNativeHID) -> Result<(), Box<dyn erro
         .append_pair("targetId", &device_info.target_id.to_string())
         .append_pair("perso", &firmware_info.perso)
         .finish();
-    query_via_websocket(ledger_api, &genuine_ws_url)
+    query_via_websocket(ledger_api, &genuine_ws_url, |_| {})
 }
 
 /// An error arising when installing the Bitcoin app.
@@ -672,7 +678,7 @@ fn install_app(
         .append_pair("firmwareKey", &app.firmware_key)
         .append_pair("hash", &app.hash)
         .finish();
-    query_via_websocket(ledger_api, &install_ws_url)
+    query_via_websocket(ledger_api, &install_ws_url, |_| {})
 }
 
 /// Install the Bitcoin application on this device. Set `is_testnet` to `true` to install the
