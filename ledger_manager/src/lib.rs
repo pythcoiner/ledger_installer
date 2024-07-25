@@ -3,7 +3,7 @@
 //! This implements utility functions to manage the applications installed on your Ledger device.
 //! This is performed by both talking to the Ledger device connected by USB but also by making HTTP
 //! request to the Ledger API used by Ledger Live.
-
+pub mod utils;
 pub use ledger_apdu;
 pub use ledger_transport_hidapi;
 
