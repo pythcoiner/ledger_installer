@@ -71,7 +71,7 @@ pub const BASE_SOCKET_URL: &str = "wss://scriptrunner.api.live.ledger.com/update
 pub enum StatusCode {
     //ACCESS_CONDITION_NOT_FULFILLED = 0x9804,
     //ALGORITHM_NOT_SUPPORTED = 0x9484,
-    //CLA_NOT_SUPPORTED = 0x6e00,
+    ClaNotSupported = 0x6e00,
     //CODE_BLOCKED = 0x9840,
     //CODE_NOT_INITIALIZED = 0x9802,
     //COMMAND_INCOMPATIBLE_FILE_STRUCTURE = 0x6981,

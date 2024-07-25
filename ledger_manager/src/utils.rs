@@ -1,4 +1,7 @@
-use ledger_transport_hidapi::{hidapi::HidApi, TransportNativeHID};
+use ledger_transport_hidapi::{
+    hidapi::{HidApi, HidError},
+    TransportNativeHID,
+};
 use std::{
     error::Error,
     fmt::{Display, Formatter},
@@ -166,6 +169,10 @@ where
 
 pub fn ledger_api() -> Result<HidApi, String> {
     HidApi::new().map_err(|e| format!("Error initializing HDI api: {}.", e))
+}
+
+pub fn ledger_api_raw() -> Result<HidApi, HidError> {
+    HidApi::new()
 }
 
 pub fn device_info(ledger_api: &TransportNativeHID) -> Result<DeviceInfo, String> {
