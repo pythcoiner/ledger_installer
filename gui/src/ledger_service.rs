@@ -1,10 +1,10 @@
-use crate::listener;
-use crate::{gui::Message, gui::Message::LedgerServiceMsg, service::ServiceFn};
+use crate::{gui::Message, gui::Message::LedgerServiceMsg, listener, service::ServiceFn};
 
-use ledger_manager::utils::{
-    check_latest_apps, get_version_info, install_app, ledger_api, Version,
+use ledger_manager::{
+    genuine_check,
+    ledger_transport_hidapi::TransportNativeHID,
+    utils::{check_latest_apps, get_version_info, install_app, ledger_api_raw, Step, Version},
 };
-use ledger_manager::{genuine_check, ledger_transport_hidapi::TransportNativeHID};
 use std::time::Duration;
 
 listener!(LedgerListener, LedgerMessage, Message, LedgerServiceMsg);
@@ -143,16 +143,24 @@ impl LedgerService {
             } else {
                 // Inform GUI that ledger disconnected
                 self.send_to_gui(LedgerMessage::Connected(None, None));
-                log::debug!("No transport");
+                log::info!("No transport");
             }
         }
     }
 
     fn connect(&self) -> Option<TransportNativeHID> {
-        if let Some(api) = &ledger_api().ok() {
-            TransportNativeHID::new(api).ok()
-        } else {
-            None
+        match ledger_api_raw() {
+            Ok(api) => match TransportNativeHID::new(&api) {
+                Ok(api) => Some(api),
+                Err(e) => {
+                    log::info!("{:?}", e);
+                    None
+                }
+            },
+            Err(e) => {
+                log::info!("{:?}", e);
+                None
+            }
         }
     }
 
@@ -193,7 +201,12 @@ impl LedgerService {
         if let Some(transport) = self.connect() {
             install_app(
                 &transport,
-                |msg, alarm| Self::display_message(&sender, msg, alarm),
+                |msg| {
+                    if msg.is_message() {
+                        let alarm = msg.is_error();
+                        Self::display_message(&sender, &msg.message(), alarm)
+                    }
+                },
                 testnet,
             )
         }

@@ -1,12 +1,16 @@
-use ledger_transport_hidapi::{hidapi::HidApi, TransportNativeHID};
+use ledger_transport_hidapi::{
+    hidapi::{HidApi, HidError},
+    TransportNativeHID,
+};
 use std::{
     error::Error,
     fmt::{Display, Formatter},
+    time::Duration,
 };
 
 use crate::{
-    bitcoin_latest_app, get_latest_apps, list_installed_apps, query_via_websocket, DeviceInfo,
-    BASE_SOCKET_URL,
+    bitcoin_latest_app, close_app, get_latest_apps, list_installed_apps, query_via_websocket_raw,
+    DeviceInfo, StatusCode, BASE_SOCKET_URL, GET_VERSION_COMMAND,
 };
 
 pub fn check_apps_installed<M>(
@@ -78,32 +82,106 @@ where
     Ok((bitcoin, test))
 }
 
+pub trait Step {
+    fn is_error(&self) -> bool;
+    fn is_message(&self) -> bool;
+    fn message(self) -> String;
+}
+
+#[derive(Debug, Clone)]
+pub enum InstallStep {
+    NotStarted,
+    Started,
+    CloseApp,
+    AllowInstall,
+    Chunk,
+    Completed,
+    Info(String),
+    Error(String),
+}
+
+impl Step for InstallStep {
+    fn is_error(&self) -> bool {
+        matches!(self, Self::Error(_))
+    }
+
+    fn is_message(&self) -> bool {
+        !matches!(self, Self::Chunk) && !matches!(self, Self::NotStarted)
+    }
+
+    fn message(self) -> String {
+        match self {
+            InstallStep::NotStarted => "".into(),
+            InstallStep::Started => "Get device info from API...".into(),
+            InstallStep::CloseApp => "Close the app in order to upgrade it...".into(),
+            InstallStep::AllowInstall => {
+                "Installing, please allow ledger manager on device...".into()
+            }
+            InstallStep::Chunk => "".into(),
+            InstallStep::Completed => "Successfully installed the app.".into(),
+            InstallStep::Info(msg) => msg,
+            InstallStep::Error(msg) => msg,
+        }
+    }
+}
+
 pub fn install_app<M>(transport: &TransportNativeHID, msg_callback: M, testnet: bool)
 where
-    M: Fn(&str, bool),
+    M: Fn(InstallStep),
 {
-    log::debug!("ledger::install_app(testnet={})", testnet);
+    msg_callback(InstallStep::Started);
 
-    msg_callback("Get device info from API...", false);
+    // if the app is open, we close it
+    let mut close_cmd_send = false;
+    match is_app_open(transport) {
+        Some(true) => {
+            // wait until the app is close
+            loop {
+                if !close_cmd_send {
+                    if let Err(e) = close_app(transport) {
+                        msg_callback(InstallStep::Error(format!(
+                            "Could not send close app command: {}",
+                            e
+                        )))
+                    }
+                    close_cmd_send = true;
+                }
+                match is_app_open(transport) {
+                    Some(false) => break,
+                    None => msg_callback(InstallStep::Error(
+                        "Could not check if the app is open.".into(),
+                    )),
+                    _ => {
+                        msg_callback(InstallStep::CloseApp);
+                    }
+                }
+                std::thread::sleep(Duration::from_millis(5000));
+            }
+        }
+        None => msg_callback(InstallStep::Error(
+            "Could not check if the app is open.".into(),
+        )),
+        _ => {}
+    }
+
     if let Ok(device_info) = device_info(transport) {
         let bitcoin_app = match bitcoin_latest_app(&device_info, testnet) {
             Ok(Some(a)) => a,
             Ok(None) => {
-                msg_callback("Could not get info about Bitcoin app.", true);
+                msg_callback(InstallStep::Error(
+                    "Could not get info about Bitcoin app.".into(),
+                ));
                 return;
             }
             Err(e) => {
-                msg_callback(
-                    &format!("Error querying info about Bitcoin app: {}.", e),
-                    true,
-                );
+                msg_callback(InstallStep::Error(format!(
+                    "Error querying info about Bitcoin app: {}.",
+                    e
+                )));
                 return;
             }
         };
-        msg_callback(
-            "Installing, please allow Ledger manager on device...",
-            false,
-        );
+        msg_callback(InstallStep::AllowInstall);
         // Now install the app by connecting through their websocket thing to their HSM. Make sure to
         // properly escape the parameters in the request's parameter.
         let install_ws_url =
@@ -115,20 +193,16 @@ where
                 .append_pair("firmwareKey", &bitcoin_app.firmware_key)
                 .append_pair("hash", &bitcoin_app.hash)
                 .finish();
-        msg_callback("Install app...", false);
-        if let Err(e) = query_via_websocket(transport, &install_ws_url) {
-            msg_callback(
-                &format!(
-                    "Got an error when installing Bitcoin app from Ledger's remote HSM: {}.",
-                    e
-                ),
-                false,
-            );
+        if let Err(e) = query_via_websocket_raw(transport, &install_ws_url, &msg_callback) {
+            msg_callback(InstallStep::Error(format!(
+                "Got an error when installing Bitcoin app from Ledger's remote HSM: {}.",
+                e
+            )));
             return;
         }
-        msg_callback("Successfully installed the app.", false);
+        msg_callback(InstallStep::Completed);
     } else {
-        msg_callback("Fail to fetch device info!", true);
+        msg_callback(InstallStep::Error("Fail to fetch device info!".into()));
     }
 }
 
@@ -136,10 +210,22 @@ pub fn ledger_api() -> Result<HidApi, String> {
     HidApi::new().map_err(|e| format!("Error initializing HDI api: {}.", e))
 }
 
+pub fn ledger_api_raw() -> Result<HidApi, HidError> {
+    HidApi::new()
+}
+
 pub fn device_info(ledger_api: &TransportNativeHID) -> Result<DeviceInfo, String> {
     log::info!("ledger::device_info()");
     DeviceInfo::new(ledger_api)
         .map_err(|e| format!("Error fetching device info: {}. Is the Ledger unlocked?", e))
+}
+
+// if the app is open we get StatusCode::ClaNotSupported
+// see https://github.com/darosior/ledger_installer/issues/14
+pub fn is_app_open(ledger_api: &TransportNativeHID) -> Option<bool> {
+    let ver_answer = ledger_api.exchange(&GET_VERSION_COMMAND).ok()?;
+    let ret = ver_answer.retcode();
+    Some(ret == StatusCode::ClaNotSupported as u16)
 }
 
 pub struct VersionInfo {

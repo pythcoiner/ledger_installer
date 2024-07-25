@@ -11,6 +11,7 @@ use form_urlencoded::Serializer as UrlSerializer;
 use ledger_apdu::APDUCommand;
 use ledger_transport_hidapi::TransportNativeHID;
 use serde_derive::Deserialize;
+use utils::InstallStep;
 
 use std::{error, str};
 
@@ -50,6 +51,15 @@ const OPEN_APP_COMMAND_TEMPLATE: APDUCommand<&[u8]> = APDUCommand {
     data: &[],
 };
 
+// https://github.com/LedgerHQ/ledger-live/blob/5a0a1aa5dc183116839851b79bceb6704f1de4b9/libs/ledger-live-common/src/hw/quitApp.ts
+const CLOSE_APP_COMMAND: APDUCommand<&[u8]> = APDUCommand {
+    cla: 0xb0,
+    ins: 0xa7,
+    p1: 0x00,
+    p2: 0x00,
+    data: &[],
+};
+
 /// The Ledger Live API requires request to set their claimed version of Ledger Live. This was
 /// chosen arbitrarily as a working value.
 pub const LIVE_COMMON_VERSION: &str = "34.0.0";
@@ -70,7 +80,7 @@ pub const BASE_SOCKET_URL: &str = "wss://scriptrunner.api.live.ledger.com/update
 pub enum StatusCode {
     //ACCESS_CONDITION_NOT_FULFILLED = 0x9804,
     //ALGORITHM_NOT_SUPPORTED = 0x9484,
-    //CLA_NOT_SUPPORTED = 0x6e00,
+    ClaNotSupported = 0x6e00,
     //CODE_BLOCKED = 0x9840,
     //CODE_NOT_INITIALIZED = 0x9802,
     //COMMAND_INCOMPATIBLE_FILE_STRUCTURE = 0x6981,
@@ -293,14 +303,25 @@ fn deser_apdu_command(hex_str: &str) -> Result<APDUCommand<Vec<u8>>, Box<dyn err
     })
 }
 
-/// Some actions, such as installing apps or upgrading the firmware, are done in Ledger Live by
-/// opening a socket so a remote server communicates directly with the Ledger. It appears to be
-/// talking to an HSM up there which would manage sensitive actions.
-/// Parameters are passed directly in the url. Don't forget to escape the necessary characters!
 pub fn query_via_websocket(
     ledger_api: &TransportNativeHID,
     url: &str,
 ) -> Result<(), Box<dyn error::Error>> {
+    query_via_websocket_raw(ledger_api, url, |_| {})
+}
+
+/// Some actions, such as installing apps or upgrading the firmware, are done in Ledger Live by
+/// opening a socket so a remote server communicates directly with the Ledger. It appears to be
+/// talking to an HSM up there which would manage sensitive actions.
+/// Parameters are passed directly in the url. Don't forget to escape the necessary characters!
+pub fn query_via_websocket_raw<M>(
+    ledger_api: &TransportNativeHID,
+    url: &str,
+    msg_callback: M,
+) -> Result<(), Box<dyn error::Error>>
+where
+    M: Fn(InstallStep),
+{
     let (mut socket, _) = tungstenite::connect(url)?;
 
     // https://github.com/LedgerHQ/ledger-live/blob/99879eb5bada1ecaea7a02d8886e16b44657af6d/libs/ledger-live-common/src/socket/index.ts#L95
@@ -309,6 +330,7 @@ pub fn query_via_websocket(
         match msg {
             // It appears they only exchange JSON text messages.
             tungstenite::Message::Text(text) => {
+                msg_callback(InstallStep::Chunk);
                 let msg: HsmMessage = serde_json::from_str(&text)?;
 
                 // The dance is usually:
@@ -629,6 +651,16 @@ pub fn open_bitcoin_app(
     };
 
     let resp = ledger_api.exchange(&command)?;
+    if resp.retcode() != StatusCode::OK as u16 {
+        return Err(format!("Error opening app. Ledger response: {:#x?}.", resp).into());
+    }
+
+    Ok(())
+}
+
+/// Close App if open
+pub fn close_app(ledger_api: &TransportNativeHID) -> Result<(), Box<dyn error::Error>> {
+    let resp = ledger_api.exchange(&CLOSE_APP_COMMAND)?;
     if resp.retcode() != StatusCode::OK as u16 {
         return Err(format!("Error opening app. Ledger response: {:#x?}.", resp).into());
     }
