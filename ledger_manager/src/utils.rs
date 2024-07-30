@@ -9,7 +9,7 @@ use std::{
 
 use crate::{
     bitcoin_latest_app, get_latest_apps, list_installed_apps, query_via_websocket, DeviceInfo,
-    BASE_SOCKET_URL,
+    StatusCode, BASE_SOCKET_URL, GET_VERSION_COMMAND,
 };
 
 pub fn check_apps_installed<M>(
@@ -90,10 +90,11 @@ pub trait Step {
 #[derive(Debug, Clone)]
 pub enum InstallStep {
     Started,
-    Info(String),
+    CloseApp,
     AllowInstall,
     Chunk,
     Completed,
+    Info(String),
     Error(String),
 }
 
@@ -109,12 +110,13 @@ impl Step for InstallStep {
     fn message(self) -> String {
         match self {
             InstallStep::Started => "Get device info from API...".into(),
-            InstallStep::Info(msg) => msg,
+            InstallStep::CloseApp => "Close the app in order to upgrade it...".into(),
             InstallStep::AllowInstall => {
                 "Installing, please allow ledger manager on device...".into()
             }
             InstallStep::Chunk => "".into(),
             InstallStep::Completed => "Successfully installed the app.".into(),
+            InstallStep::Info(msg) => msg,
             InstallStep::Error(msg) => msg,
         }
     }
@@ -125,6 +127,30 @@ where
     M: Fn(InstallStep),
 {
     msg_callback(InstallStep::Started);
+
+    // if the app is open, we notice user to close it and wait
+    match is_app_open(transport) {
+        Some(true) => {
+            // notice user
+            msg_callback(InstallStep::CloseApp);
+            // wait until the app is close
+            loop {
+                match is_app_open(transport) {
+                    Some(false) => break,
+                    None => msg_callback(InstallStep::Error(
+                        "Could not check if the app is open.".into(),
+                    )),
+                    _ => {}
+                }
+                // TODO: should we add a sleep?
+            }
+        }
+        None => msg_callback(InstallStep::Error(
+            "Could not check if the app is open.".into(),
+        )),
+        _ => {}
+    }
+
     if let Ok(device_info) = device_info(transport) {
         let bitcoin_app = match bitcoin_latest_app(&device_info, testnet) {
             Ok(Some(a)) => a,
@@ -179,6 +205,14 @@ pub fn device_info(ledger_api: &TransportNativeHID) -> Result<DeviceInfo, String
     log::info!("ledger::device_info()");
     DeviceInfo::new(ledger_api)
         .map_err(|e| format!("Error fetching device info: {}. Is the Ledger unlocked?", e))
+}
+
+// if the app is open we get StatusCode::ClaNotSupported
+// see https://github.com/darosior/ledger_installer/issues/14
+pub fn is_app_open(ledger_api: &TransportNativeHID) -> Option<bool> {
+    let ver_answer = ledger_api.exchange(&GET_VERSION_COMMAND).ok()?;
+    let ret = ver_answer.retcode();
+    Some(ret == StatusCode::ClaNotSupported as u16)
 }
 
 pub struct VersionInfo {
