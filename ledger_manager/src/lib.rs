@@ -525,7 +525,7 @@ impl FirmwareInfo {
     pub fn from_device(device_info: &DeviceInfo) -> Self {
         let dev_ver_resp = minreq::Request::new(
             minreq::Method::Post,
-            &format!("{}/get_device_version", BASE_API_V1_URL),
+            format!("{}/get_device_version", BASE_API_V1_URL),
         )
         .with_param("livecommonversion", LIVE_COMMON_VERSION)
         .with_json(&serde_json::json!({
@@ -539,7 +539,7 @@ impl FirmwareInfo {
 
         let firm_resp = minreq::Request::new(
             minreq::Method::Post,
-            &format!("{}/get_firmware_version", BASE_API_V1_URL),
+            format!("{}/get_firmware_version", BASE_API_V1_URL),
         )
         .with_param("livecommonversion", LIVE_COMMON_VERSION)
         .with_json(&serde_json::json!({
@@ -581,7 +581,7 @@ pub fn bitcoin_apps_by_hashes(
         let e: Vec<Option<BitcoinAppInfo>> = Vec::new();
         return Ok(e);
     }
-    let hashes_hex: Vec<_> = hashes.into_iter().map(|h| hex::encode(&h).into()).collect();
+    let hashes_hex: Vec<_> = hashes.into_iter().map(|h| hex::encode(h).into()).collect();
     let resp_apps = minreq::Request::new(
         minreq::Method::Post,
         format!("{}/apps/hash", BASE_API_V2_URL),
