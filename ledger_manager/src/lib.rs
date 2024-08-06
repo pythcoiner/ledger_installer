@@ -50,6 +50,15 @@ const OPEN_APP_COMMAND_TEMPLATE: APDUCommand<&[u8]> = APDUCommand {
     data: &[],
 };
 
+// https://github.com/LedgerHQ/ledger-live/blob/5a0a1aa5dc183116839851b79bceb6704f1de4b9/libs/ledger-live-common/src/hw/quitApp.ts
+const CLOSE_APP_COMMAND: APDUCommand<&[u8]> = APDUCommand {
+    cla: 0xb0,
+    ins: 0xa7,
+    p1: 0x00,
+    p2: 0x00,
+    data: &[],
+};
+
 /// The Ledger Live API requires request to set their claimed version of Ledger Live. This was
 /// chosen arbitrarily as a working value.
 pub const LIVE_COMMON_VERSION: &str = "34.0.0";
@@ -629,6 +638,16 @@ pub fn open_bitcoin_app(
     };
 
     let resp = ledger_api.exchange(&command)?;
+    if resp.retcode() != StatusCode::OK as u16 {
+        return Err(format!("Error opening app. Ledger response: {:#x?}.", resp).into());
+    }
+
+    Ok(())
+}
+
+/// Close App if open
+pub fn close_app(ledger_api: &TransportNativeHID) -> Result<(), Box<dyn error::Error>> {
+    let resp = ledger_api.exchange(&CLOSE_APP_COMMAND)?;
     if resp.retcode() != StatusCode::OK as u16 {
         return Err(format!("Error opening app. Ledger response: {:#x?}.", resp).into());
     }
