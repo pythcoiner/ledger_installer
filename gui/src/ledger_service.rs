@@ -143,7 +143,6 @@ impl LedgerService {
             } else {
                 // Inform GUI that ledger disconnected
                 self.send_to_gui(LedgerMessage::Connected(None, None));
-                log::info!("No transport");
             }
         }
     }
@@ -198,18 +197,18 @@ impl LedgerService {
 
     fn install_app(&mut self, testnet: bool) {
         let sender = self.sender.clone();
-        if let Some(transport) = self.connect() {
-            install_app(
-                &transport,
-                |msg| {
-                    if msg.is_message() {
-                        let alarm = msg.is_error();
-                        Self::display_message(&sender, &msg.message(), alarm)
-                    }
-                },
-                testnet,
-            )
-        }
+        install_app(
+            "".into(),
+            |_| self.connect(),
+            |msg: ledger_manager::utils::InstallStep<bool>| {
+                if msg.is_message() {
+                    let alarm = msg.is_error();
+                    Self::display_message(&sender, &msg.message(), alarm)
+                }
+            },
+            testnet,
+            false,
+        )
     }
 
     fn install_main(&mut self) {

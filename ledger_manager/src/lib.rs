@@ -68,7 +68,7 @@ pub const LIVE_COMMON_VERSION: &str = "34.0.0";
 /// is default. 4 is "shitcoins". The rest is unclear. Defined here:
 /// https://github.com/LedgerHQ/ledger-live/blob/4d1d7bb3462fd0c986ed587f0cf426afc96850c8/libs/device-core/src/managerApi/use-cases/getProviderIdUseCase.ts#L3-L9
 // TODO: make it possible to set it?
-pub const PROVIDER: u32 = 1;
+pub const PROVIDER: u32 = 4;
 
 pub const BASE_API_V1_URL: &str = "https://manager.api.live.ledger.com/api";
 pub const BASE_API_V2_URL: &str = "https://manager.api.live.ledger.com/api/v2";
@@ -307,20 +307,20 @@ pub fn query_via_websocket(
     ledger_api: &TransportNativeHID,
     url: &str,
 ) -> Result<(), Box<dyn error::Error>> {
-    query_via_websocket_raw(ledger_api, url, |_| {})
+    query_via_websocket_raw::<_, bool>(ledger_api, url, |_| {})
 }
 
 /// Some actions, such as installing apps or upgrading the firmware, are done in Ledger Live by
 /// opening a socket so a remote server communicates directly with the Ledger. It appears to be
 /// talking to an HSM up there which would manage sensitive actions.
 /// Parameters are passed directly in the url. Don't forget to escape the necessary characters!
-pub fn query_via_websocket_raw<M>(
+pub fn query_via_websocket_raw<M, T>(
     ledger_api: &TransportNativeHID,
     url: &str,
     msg_callback: M,
 ) -> Result<(), Box<dyn error::Error>>
 where
-    M: Fn(InstallStep),
+    M: Fn(InstallStep<T>),
 {
     let (mut socket, _) = tungstenite::connect(url)?;
 

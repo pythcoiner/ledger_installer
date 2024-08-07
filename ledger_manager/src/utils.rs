@@ -9,8 +9,8 @@ use std::{
 };
 
 use crate::{
-    bitcoin_latest_app, close_app, get_latest_apps, list_installed_apps, query_via_websocket_raw,
-    DeviceInfo, StatusCode, BASE_SOCKET_URL, GET_VERSION_COMMAND,
+    bitcoin_latest_app, close_app, get_latest_apps, list_installed_apps, open_bitcoin_app,
+    query_via_websocket_raw, DeviceInfo, StatusCode, BASE_SOCKET_URL, GET_VERSION_COMMAND,
 };
 
 pub fn check_apps_installed<M>(
@@ -89,7 +89,7 @@ pub trait Step {
 }
 
 #[derive(Debug, Clone)]
-pub enum InstallStep {
+pub enum InstallStep<T> {
     NotStarted,
     Started,
     CloseApp,
@@ -98,9 +98,10 @@ pub enum InstallStep {
     Completed,
     Info(String),
     Error(String),
+    InstalledVersion(T),
 }
 
-impl Step for InstallStep {
+impl<T> Step for InstallStep<T> {
     fn is_error(&self) -> bool {
         matches!(self, Self::Error(_))
     }
@@ -111,34 +112,54 @@ impl Step for InstallStep {
 
     fn message(self) -> String {
         match self {
-            InstallStep::NotStarted => "".into(),
             InstallStep::Started => "Get device info from API...".into(),
             InstallStep::CloseApp => "Close the app in order to upgrade it...".into(),
             InstallStep::AllowInstall => {
                 "Installing, please allow ledger manager on device...".into()
             }
-            InstallStep::Chunk => "".into(),
             InstallStep::Completed => "Successfully installed the app.".into(),
             InstallStep::Info(msg) => msg,
             InstallStep::Error(msg) => msg,
+            _ => "".into(),
         }
     }
 }
 
-pub fn install_app<M>(transport: &TransportNativeHID, msg_callback: M, testnet: bool)
+pub fn install_app<M, P, T>(id: String, api: P, msg_callback: M, testnet: bool, reopen: bool)
 where
-    M: Fn(InstallStep),
+    M: Fn(InstallStep<T>),
+    P: Fn(&str) -> Option<TransportNativeHID>,
 {
     msg_callback(InstallStep::Started);
 
     // if the app is open, we close it
     let mut close_cmd_send = false;
-    match is_app_open(transport) {
+
+    // we create a temporary transport, see https://github.com/wizardsardine/async-hwi/issues/95
+    let open = is_app_open(&{
+        if let Some(api) = api(&id) {
+            api
+        } else {
+            msg_callback(InstallStep::Error("Cannot open transport!".into()));
+            return;
+        }
+    });
+
+    match open {
         Some(true) => {
             // wait until the app is close
             loop {
                 if !close_cmd_send {
-                    if let Err(e) = close_app(transport) {
+                    // we create a temporary transport, see https://github.com/wizardsardine/async-hwi/issues/95
+                    let close = close_app(&{
+                        if let Some(api) = api(&id) {
+                            api
+                        } else {
+                            msg_callback(InstallStep::Error("Cannot open transport!".into()));
+                            return;
+                        }
+                    });
+                    if let Err(e) = close {
                         msg_callback(InstallStep::Error(format!(
                             "Could not send close app command: {}",
                             e
@@ -146,16 +167,27 @@ where
                     }
                     close_cmd_send = true;
                 }
-                match is_app_open(transport) {
+                // we create a temporary transport, see https://github.com/wizardsardine/async-hwi/issues/95
+                let open = is_app_open(&{
+                    if let Some(api) = api(&id) {
+                        api
+                    } else {
+                        msg_callback(InstallStep::Info("Cannot open transport!".into()));
+                        continue;
+                    }
+                });
+
+                match open {
                     Some(false) => break,
-                    None => msg_callback(InstallStep::Error(
-                        "Could not check if the app is open.".into(),
-                    )),
+                    None => {
+                        msg_callback(InstallStep::Info("Closing app...".into()));
+                        std::thread::sleep(Duration::from_millis(5000));
+                        continue;
+                    }
                     _ => {
                         msg_callback(InstallStep::CloseApp);
                     }
                 }
-                std::thread::sleep(Duration::from_millis(5000));
             }
         }
         None => msg_callback(InstallStep::Error(
@@ -164,7 +196,15 @@ where
         _ => {}
     }
 
-    if let Ok(device_info) = device_info(transport) {
+    // now the app is closed, we can keep transport open
+    let transport = if let Some(api) = api(&id) {
+        api
+    } else {
+        msg_callback(InstallStep::Error("Cannot open transport!".into()));
+        return;
+    };
+
+    if let Ok(device_info) = device_info(&transport) {
         let bitcoin_app = match bitcoin_latest_app(&device_info, testnet) {
             Ok(Some(a)) => a,
             Ok(None) => {
@@ -193,12 +233,57 @@ where
                 .append_pair("firmwareKey", &bitcoin_app.firmware_key)
                 .append_pair("hash", &bitcoin_app.hash)
                 .finish();
-        if let Err(e) = query_via_websocket_raw(transport, &install_ws_url, &msg_callback) {
+        if let Err(e) = query_via_websocket_raw(&transport, &install_ws_url, &msg_callback) {
             msg_callback(InstallStep::Error(format!(
                 "Got an error when installing Bitcoin app from Ledger's remote HSM: {}.",
                 e
             )));
             return;
+        }
+        msg_callback(InstallStep::Info("App successfully installed!".into()));
+
+        if reopen {
+            // drop transport to avoid the device node name  to change
+            drop(transport);
+            msg_callback(InstallStep::Info("Accept open app on device!".into()));
+            let open_cmd = open_bitcoin_app(
+                &{
+                    if let Some(api) = api(&id) {
+                        api
+                    } else {
+                        msg_callback(InstallStep::Error("Cannot open transport!".into()));
+                        return;
+                    }
+                },
+                testnet,
+            );
+            if let Err(e) = open_cmd {
+                msg_callback(InstallStep::Error(format!(
+                    "Fail to send OpenApp command to device: {}",
+                    e
+                )));
+                return;
+            }
+
+            // wait for the app to open
+            loop {
+                std::thread::sleep(Duration::from_millis(5000));
+                let open = is_app_open(&{
+                    if let Some(api) = api(&id) {
+                        api
+                    } else {
+                        msg_callback(InstallStep::Error("Cannot open transport!".into()));
+                        continue;
+                    }
+                });
+
+                if let Some(true) = open {
+                    break;
+                }
+            }
+
+            // get the installed version
+            // TODO:
         }
         msg_callback(InstallStep::Completed);
     } else {
@@ -215,7 +300,6 @@ pub fn ledger_api_raw() -> Result<HidApi, HidError> {
 }
 
 pub fn device_info(ledger_api: &TransportNativeHID) -> Result<DeviceInfo, String> {
-    log::info!("ledger::device_info()");
     DeviceInfo::new(ledger_api)
         .map_err(|e| format!("Error fetching device info: {}. Is the Ledger unlocked?", e))
 }
